@@ -1,0 +1,8 @@
+config:
+    db: &db_default
+        ip: localhost:3306
+        user: root
+        password: test
+        name: test
+        migration_dir: migrations
+        driver: mysql

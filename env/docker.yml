@@ -1,0 +1,4 @@
+config:
+    db:
+        <<: *db_default
+        ip: localhost:3335
