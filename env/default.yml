@@ -1,4 +1,4 @@
-config:
+default:
     db: &db_default
         ip: localhost:3306
         user: root
