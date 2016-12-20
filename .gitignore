@@ -27,20 +27,4 @@ _testmain.go
 *.out
 
 .idea
-af
-activity-feed
-
-codeship-activity-feed-creds.env
-codeship.aes
-
-# Elastic Beanstalk Files
-.elasticbeanstalk/*
-!.elasticbeanstalk/*.cfg.yml
-!.elasticbeanstalk/*.global.yml
-!.elasticbeanstalk/config.yml
-
-#bins
-cmd/server/server
-cmd/emclient/emclient
-
 migrato
