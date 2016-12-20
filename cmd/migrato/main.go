@@ -70,6 +70,15 @@ func main() {
 	flag.StringVar(&config.consul.configType, "consul-config-type", "json", "Consul configuration type (json, yaml).")
 	flag.Parse()
 
+	if config.consul.endpoint == "" {
+		config.consul.endpoint = os.Getenv("CONSUL_ENDPOINT")
+	}
+
+	if config.consul.path == "" {
+		config.consul.path = os.Getenv("CONSUL_PATH")
+	}
+
+
 	fmt.Println("--------------------------------")
 	fmt.Println("Def config -", config.defaultPath)
 	fmt.Println("Env config -", config.envPath)
