@@ -22,6 +22,9 @@ import (
 	"github.com/gemnasium/migrate/migrate/direction"
 	pipep "github.com/gemnasium/migrate/pipe"
 	"gopkg.in/yaml.v2"
+
+	"github.com/spf13/viper"
+	_ "github.com/spf13/viper/remote"
 )
 
 const (
@@ -36,33 +39,74 @@ const (
 	cmdGoto    = "goto"
 )
 
-var path struct {
-	ToDefault string
-	ToEnv     string
-	Section   string
+type consul struct{
+	endpoint string
+	path string
+	configType string
+}
+
+func (c consul) IsConfigured() bool {
+	return (c.endpoint != "") && (c.path != "") && (c.configType != "")
+}
+
+var config struct {
+	defaultPath string
+	envPath     string
+	section   string
+
+	consul consul
 }
 
 func main() {
 	flag.Usage = func() {
 		helpCmd()
 	}
-	flag.StringVar(&path.ToDefault, "def", "env/default.yml", "the default configuration file.")
-	flag.StringVar(&path.ToEnv, "env", "env/docker.yml", "the environment configuration file.")
-	flag.StringVar(&path.Section, "section", "db", "the section from config file")
+	flag.StringVar(&config.defaultPath, "def", "env/default.yml", "the default configuration file.")
+	flag.StringVar(&config.envPath, "env", "env/docker.yml", "the environment configuration file.")
+	flag.StringVar(&config.section, "section", "db", "the section from config file")
+
+	flag.StringVar(&config.consul.endpoint,"consul-endpoint", "", "Consul endpoint.")
+	flag.StringVar(&config.consul.path, "consul-path", "", "Configuration key in Consul.")
+	flag.StringVar(&config.consul.configType, "consul-config-type", "json", "Consul configuration type (json, yaml).")
 	flag.Parse()
 
+	if config.consul.endpoint == "" {
+		config.consul.endpoint = os.Getenv("CONSUL_ENDPOINT")
+	}
+
+	if config.consul.path == "" {
+		config.consul.path = os.Getenv("CONSUL_PATH")
+	}
+
+
 	fmt.Println("--------------------------------")
-	fmt.Println("Def config -", path.ToDefault)
-	fmt.Println("Env config -", path.ToEnv)
-	fmt.Println("Section -", path.Section)
+	fmt.Println("Def config -", config.defaultPath)
+	fmt.Println("Env config -", config.envPath)
+	fmt.Println("-----------------")
+	fmt.Println("Consul Path - ", config.consul.path)
+	fmt.Println("Consul Endpoint - ", config.consul.endpoint)
+	fmt.Println("Consul Configuration Type - ", config.consul.configType)
+	fmt.Println("-----------------")
+
+	fmt.Println("Section -", config.section)
 	fmt.Println("--------------------------------")
 	fmt.Println()
 
 	cmd := flag.Arg(0)
 
-	c, err := initConfig(path.ToDefault, path.ToEnv, path.Section)
-	if err != nil {
-		log.Fatal(err)
+	var c map[string]interface{}
+	var err error
+
+	if config.consul.IsConfigured() {
+		c, err = readConfigFomConsul(config.consul, config.section)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		c, err = readConfigFromPath(config.defaultPath, config.envPath, config.section)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	// Validation parameters
@@ -78,8 +122,8 @@ func main() {
 		return
 	case c["password"] == nil:
 		c["password"] = ""
-	case c["ip"] == nil:
-		fmt.Println("Error: please set 'ip' parameter in DB config")
+	case c["address"] == nil:
+		fmt.Println("Error: please set 'address' parameter in DB config")
 		return
 	case c["name"] == nil:
 		fmt.Println("Error: please set 'name' parameter in DB config")
@@ -91,17 +135,33 @@ func main() {
 
 	switch driver {
 	case "postgres":
+		address := c["address"].(map[string]interface{})
+		host := address["host"].(string)
+		port := address["port"].(float64)
+		portString := strconv.FormatFloat(port, 'f', 0, 64)
+		if err != nil {
+			log.Fatal("Couldn't parse port")
+		}
+
 		url = fmt.Sprintf("%s://%s:%s@%s/%s?sslmode=disable", driver,
 			c["user"].(string),
 			c["password"].(string),
-			c["ip"].(string),
+			host + ":"+ portString,
 			c["name"].(string))
 
 	case "mysql":
+		address := c["address"].(map[string]interface{})
+		host := address["host"].(string)
+		port := address["port"].(float64)
+		portString := strconv.FormatFloat(port, 'f', 0, 64)
+		if err != nil {
+			log.Fatal("Couldn't parse port")
+		}
+
 		url = fmt.Sprintf("%s://%s:%s@tcp(%s)/%s", driver,
 			c["user"].(string),
 			c["password"].(string),
-			c["ip"].(string),
+			host + ":"+ portString,
 			c["name"].(string))
 	default:
 		fmt.Printf("Error: unknown driver '%s'\n", driver)
@@ -124,9 +184,7 @@ func main() {
 		case *net.OpError:
 			fmt.Println(fmt.Sprintf("Can't connect to the DB: %s. Error: %s", url, e))
 		}
-		//		pretty.Println("=============    (╯°□°）╯︵ ┻━┻)   =============")
-		//		pretty.Println(err)
-		//		pretty.Println("=============    ┬─┬ノ( º _ ºノ)   =============")
+
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -303,7 +361,47 @@ Commands:
 `)
 }
 
-func initConfig(defaultConfigPath, envConfigPath, section string) (map[string]interface{}, error) {
+
+func readConfigFomConsul(c consul, section string) (map[string]interface{}, error) {
+	v := viper.New()
+	v.AddRemoteProvider("consul", c.endpoint, c.path)
+	v.WatchRemoteConfig()
+	v.SetConfigType(c.configType)
+
+	var err error
+	tries := 10
+	for tries > 0 {
+		if err = v.ReadRemoteConfig(); err != nil {
+			time.Sleep(200 * time.Millisecond)
+			tries--
+			log.Fatal("Couldn't read config, retrying... (%s)\n", err)
+		} else {
+			break
+		}
+	}
+
+	if tries == 0 {
+		log.Fatalf("Could not read config file: %s\n", err)
+	}
+
+	config := map[string]interface{}{}
+
+	err = v.Unmarshal(&config)
+
+	sc, ok := config[section]
+	if !ok {
+		log.Fatalf("Could not get %s section from consul config \n", section)
+	}
+
+	sectionConfig, ok := sc.(map[string]interface{})
+	if !ok {
+		log.Fatalf("Could not get %s section from consul config \n", section)
+	}
+
+	return sectionConfig, err
+}
+
+func readConfigFromPath(defaultConfigPath, envConfigPath, section string) (map[string]interface{}, error) {
 	def, err := ioutil.ReadFile(defaultConfigPath)
 	if err != nil {
 		return nil, err
